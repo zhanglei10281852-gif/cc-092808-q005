@@ -130,11 +130,17 @@ class SpecimenCreate(BaseModel):
     integrity_percent: float | None = Field(default=None, ge=0, le=100)
     packaging: str = Field(default="", max_length=500)
     sealed_on: date | None = None
+    seal_code: str = Field(default="", max_length=80)
     created_by: str = Field(min_length=1, max_length=100)
 
     @field_validator("specimen_no")
     @classmethod
     def normalize_specimen_no(cls, value: str) -> str:
+        return value.strip().upper()
+
+    @field_validator("seal_code")
+    @classmethod
+    def normalize_seal_code(cls, value: str) -> str:
         return value.strip().upper()
 
 
@@ -302,3 +308,57 @@ class Page(BaseModel):
     total: int
     limit: int
     offset: int
+
+
+class HandoverCreate(BaseModel):
+    case_id: int | None = Field(default=None, gt=0)
+    purpose: str = Field(default="调取", pattern="^(调取|归还)$")
+    legal_basis: str = Field(min_length=3, max_length=300)
+    specimen_ids: list[int] = Field(default_factory=list, max_length=200)
+    target_location_id: int | None = Field(default=None, gt=0)
+    parent_session_id: int | None = Field(default=None, gt=0)
+    handover_user_id: int = Field(gt=0)
+    receiver_user_id: int = Field(gt=0)
+    expires_in_minutes: int = Field(default=60, ge=5, le=1440)
+
+    @model_validator(mode="after")
+    def validate_purpose_payload(self) -> "HandoverCreate":
+        if self.purpose == "调取":
+            if self.case_id is None:
+                raise ValueError("调取交接必须指定案件")
+            if not self.specimen_ids:
+                raise ValueError("调取交接必须包含预期检材清单")
+            if any(specimen_id <= 0 for specimen_id in self.specimen_ids):
+                raise ValueError("检材标识无效")
+            if self.target_location_id is None:
+                raise ValueError("调取交接必须指定接收库位")
+        else:
+            if self.parent_session_id is None:
+                raise ValueError("归还交接必须关联原调取会话")
+        return self
+
+
+class HandoverScan(BaseModel):
+    party: str = Field(pattern="^(handover|receiver)$")
+    specimen_code: str = Field(min_length=1, max_length=60)
+    seal_code: str = Field(min_length=1, max_length=80)
+    scan_key: str = Field(min_length=8, max_length=120)
+
+    @field_validator("specimen_code", "seal_code")
+    @classmethod
+    def uppercase(cls, value: str) -> str:
+        return value.strip().upper()
+
+
+class HandoverConfirm(BaseModel):
+    party: str = Field(pattern="^(handover|receiver)$")
+    password: str = Field(min_length=1, max_length=128)
+
+
+class HandoverCancel(BaseModel):
+    reason: str = Field(min_length=2, max_length=300)
+
+
+class HandoverDiscrepancy(BaseModel):
+    scan_id: int = Field(gt=0)
+    reason: str = Field(min_length=2, max_length=300)

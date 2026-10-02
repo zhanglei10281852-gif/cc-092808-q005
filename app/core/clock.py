@@ -9,10 +9,15 @@ def utc_now() -> datetime:
     return datetime.now(UTC)
 
 
-def to_storage(value: datetime) -> str:
+def to_storage(value: datetime, *, timespec: str = "seconds") -> str:
     if value.tzinfo is None:
         value = value.replace(tzinfo=UTC)
-    return value.astimezone(UTC).isoformat(timespec="seconds")
+    return value.astimezone(UTC).isoformat(timespec=timespec)
+
+
+def to_microseconds(value: datetime) -> str:
+    """容器摆放时间：同一秒内可能连续移库/移交，需要微秒精度保证 (容器,时间) 唯一。"""
+    return to_storage(value, timespec="microseconds")
 
 
 def from_storage(value: str | None) -> datetime | None:

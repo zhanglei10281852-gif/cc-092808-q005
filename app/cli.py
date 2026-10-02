@@ -24,6 +24,7 @@ def check_command() -> dict:
     required = {
         "forensic_cases", "specimens", "storage_locations", "examinations",
         "review_schedules", "quality_alerts", "outbox_events",
+        "handover_sessions", "handover_items", "handover_scans", "handover_stage_events",
     }
     actual = {
         row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
@@ -85,7 +86,8 @@ def demo_command() -> dict:
         specimen = service.custody.create_specimen({
             "specimen_no": f"SP-DEMO-{suffix:04d}", "case_id": accepted["id"], "parent_specimen_id": None,
             "received_year": 2026, "initial_quantity": 5, "integrity_percent": 100,
-            "packaging": "独立封袋，封识完整", "sealed_on": "2026-09-21", "created_by": "cli",
+            "packaging": "独立封袋，封识完整", "sealed_on": "2026-09-21",
+            "seal_code": f"SEAL-DEMO-{suffix:04d}", "created_by": "cli",
         })
         placement = service.custody.place_specimen({
             "specimen_id": specimen["id"], "location_id": location["id"], "quantity": 5,

@@ -31,6 +31,11 @@ from app.forensics.schemas import (
     ExaminationInvalidate,
     ExaminationStart,
     WithdrawalCreate,
+    HandoverCancel,
+    HandoverConfirm,
+    HandoverCreate,
+    HandoverDiscrepancy,
+    HandoverScan,
 )
 from app.forensics.service import ForensicService
 
@@ -352,3 +357,86 @@ def decide_release(
 def release_detail(request_id: int, principal: Principal = Depends(current_principal)) -> dict:
     principal.require("forensic_cases.read")
     return _service().repository.release_detail(request_id)
+
+
+# ---------------------------------------------------------------- 交接会话
+@router.post("/handovers", status_code=201)
+def create_handover(data: HandoverCreate, principal: Principal = Depends(current_principal)) -> dict:
+    principal.require("custody.handover")
+    with transaction(immediate=True) as connection:
+        payload = data.model_dump(mode="json") | {
+            "created_by": principal.display_name, "created_by_user_id": principal.user_id,
+        }
+        return ForensicService(connection).handover.create_session(payload)
+
+
+@router.get("/handovers")
+def list_handovers(
+    case_id: int | None = None,
+    status: str | None = None,
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    principal: Principal = Depends(current_principal),
+) -> dict:
+    principal.require("custody.read")
+    return _service().handover.list_sessions(case_id=case_id, status=status, limit=limit, offset=offset)
+
+
+@router.post("/handovers/sweep-expired")
+def sweep_expired_handovers(principal: Principal = Depends(current_principal)) -> dict:
+    principal.require("custody.handover")
+    return _service().handover.sweep_expired()
+
+
+@router.get("/handovers/{session_id}")
+def handover_detail(session_id: int, principal: Principal = Depends(current_principal)) -> dict:
+    principal.require("custody.read")
+    return _service().handover.session_detail(session_id)
+
+
+@router.post("/handovers/{session_id}/scans", status_code=201)
+def scan_handover(
+    session_id: int,
+    data: HandoverScan,
+    principal: Principal = Depends(current_principal),
+) -> dict:
+    principal.require("custody.handover")
+    payload = data.model_dump(mode="json") | {"user_id": principal.user_id, "scanner": principal.display_name}
+    with transaction(immediate=True) as connection:
+        return ForensicService(connection).handover.scan(session_id, payload)
+
+
+@router.post("/handovers/{session_id}/discrepancies")
+def resolve_handover_discrepancy(
+    session_id: int,
+    data: HandoverDiscrepancy,
+    principal: Principal = Depends(current_principal),
+) -> dict:
+    principal.require("custody.handover")
+    payload = data.model_dump(mode="json") | {"user_id": principal.user_id, "actor": principal.display_name}
+    with transaction(immediate=True) as connection:
+        return ForensicService(connection).handover.resolve_discrepancy(session_id, payload)
+
+
+@router.post("/handovers/{session_id}/confirm")
+def confirm_handover(
+    session_id: int,
+    data: HandoverConfirm,
+    principal: Principal = Depends(current_principal),
+) -> dict:
+    principal.require("custody.handover")
+    payload = data.model_dump(mode="json") | {"user_id": principal.user_id}
+    with transaction(immediate=True) as connection:
+        return ForensicService(connection).handover.confirm(session_id, payload)
+
+
+@router.post("/handovers/{session_id}/cancel")
+def cancel_handover(
+    session_id: int,
+    data: HandoverCancel,
+    principal: Principal = Depends(current_principal),
+) -> dict:
+    principal.require("custody.handover")
+    payload = {"reason": data.reason, "actor": principal.display_name}
+    with transaction(immediate=True) as connection:
+        return ForensicService(connection).handover.cancel(session_id, principal.user_id, payload)

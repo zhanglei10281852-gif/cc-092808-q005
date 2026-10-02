@@ -205,7 +205,7 @@ class ForensicRepository:
     def count_table(self, table: str) -> int:
         allowed = {
             "forensic_cases", "specimens", "storage_locations", "examinations",
-            "review_schedules", "quality_alerts", "release_requests",
+            "review_schedules", "quality_alerts", "release_requests", "handover_sessions",
         }
         if table not in allowed:
             raise ValueError("不允许统计该数据表")

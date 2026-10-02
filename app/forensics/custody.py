@@ -3,8 +3,9 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
-from app.core.clock import Clock, SystemClock, to_storage
+from app.core.clock import Clock, SystemClock, to_microseconds, to_storage
 from app.core.errors import ConflictError, ValidationError
+from app.forensics.handover import void_open_handovers
 from app.forensics.repository import ForensicRepository, record
 
 
@@ -57,12 +58,13 @@ class CustodyService:
         try:
             cursor = self.connection.execute(
                 "INSERT INTO specimens(specimen_no,case_id,parent_specimen_id,received_year,initial_quantity,"
-                "available_quantity,integrity_percent,packaging,sealed_on,status,created_by,created_at,updated_at) "
-                "VALUES(?,?,?,?,?,?,?,?,?,'pending',?,?,?)",
+                "available_quantity,integrity_percent,packaging,sealed_on,seal_code,status,created_by,created_at,updated_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,'pending',?,?,?)",
                 (
                     data["specimen_no"], data["case_id"], data.get("parent_specimen_id"), data["received_year"],
                     data["initial_quantity"], data["initial_quantity"], data.get("integrity_percent"),
-                    data.get("packaging", ""), data.get("sealed_on"), data["created_by"], timestamp, timestamp,
+                    data.get("packaging", ""), data.get("sealed_on"), data.get("seal_code", ""),
+                    data["created_by"], timestamp, timestamp,
                 ),
             )
         except sqlite3.IntegrityError as exc:
@@ -100,7 +102,7 @@ class CustodyService:
         try:
             cursor = self.connection.execute(
                 "INSERT INTO specimen_placements(specimen_id,location_id,quantity,container_code,placed_at) VALUES(?,?,?,?,?)",
-                (specimen["id"], location["id"], data["quantity"], data["container_code"], timestamp),
+                (specimen["id"], location["id"], data["quantity"], data["container_code"], to_microseconds(self.clock.now())),
             )
         except sqlite3.IntegrityError as exc:
             raise ConflictError("容器编码与入库时间冲突") from exc
@@ -134,7 +136,7 @@ class CustodyService:
         timestamp = to_storage(self.clock.now())
         cursor = self.connection.execute(
             "INSERT INTO specimen_placements(specimen_id,location_id,quantity,container_code,placed_at) VALUES(?,?,?,?,?)",
-            (placement["specimen_id"], target["id"], placement["quantity"], placement["container_code"], timestamp),
+            (placement["specimen_id"], target["id"], placement["quantity"], placement["container_code"], to_microseconds(self.clock.now())),
         )
         new_id = int(cursor.lastrowid)
         updated = self.connection.execute(
@@ -151,6 +153,7 @@ class CustodyService:
                 data["idempotency_key"], data["actor"], data["reason"], timestamp,
             ),
         )
+        void_open_handovers(self.connection, int(placement["specimen_id"]), "检材在交接确认前被移动（移库），交接会话失效", timestamp)
         return {"placement": self.repository.require_placement(new_id), "replayed": False}
 
     def withdraw(self, data: dict[str, Any]) -> dict[str, Any]:
@@ -176,6 +179,7 @@ class CustodyService:
             "VALUES(?,?,?,?,?,?,?)",
             (specimen["id"], data["movement_type"], -quantity, data["idempotency_key"], data["actor"], data["reason"], timestamp),
         )
+        void_open_handovers(self.connection, int(specimen["id"]), "检材在交接确认前被领用或取样，交接会话失效", timestamp)
         return {
             "specimen": self.repository.specimen_detail(int(specimen["id"])),
             "movement": record(self.connection.execute("SELECT * FROM custody_events WHERE id=?", (cursor.lastrowid,)).fetchone()),
