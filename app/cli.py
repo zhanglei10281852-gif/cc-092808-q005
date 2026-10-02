@@ -23,7 +23,9 @@ def check_command() -> dict:
     foreign_keys = connection.execute("PRAGMA foreign_key_check").fetchall()
     required = {
         "forensic_cases", "specimens", "storage_locations", "examinations",
-        "review_schedules", "quality_alerts", "outbox_events",
+        "review_schedules", "quality_alerts", "outbox_events", "handover_sessions",
+        "handover_expected_items", "handover_scans", "handover_stage_events",
+        "handover_liability_transfers",
     }
     actual = {
         row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()

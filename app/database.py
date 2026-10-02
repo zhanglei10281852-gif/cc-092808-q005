@@ -223,7 +223,7 @@ CREATE TABLE IF NOT EXISTS custody_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     specimen_id INTEGER NOT NULL REFERENCES specimens(id) ON DELETE CASCADE,
     placement_id INTEGER REFERENCES specimen_placements(id),
-    movement_type TEXT NOT NULL CHECK(movement_type IN ('入库','移库','取样','领用','归还','报废','盘点调整')),
+    movement_type TEXT NOT NULL CHECK(movement_type IN ('入库','移库','取样','领用','归还','报废','盘点调整','交接')),
     quantity REAL NOT NULL,
     from_location_id INTEGER REFERENCES storage_locations(id),
     to_location_id INTEGER REFERENCES storage_locations(id),
@@ -392,6 +392,102 @@ CREATE TABLE IF NOT EXISTS outbox_events (
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_outbox_pending ON outbox_events(status,available_at,id);
+
+CREATE TABLE IF NOT EXISTS handover_sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_no TEXT NOT NULL UNIQUE,
+    forensic_case_id INTEGER NOT NULL REFERENCES forensic_cases(id) ON DELETE RESTRICT,
+    direction TEXT NOT NULL CHECK(direction IN ('调取','归还')),
+    legal_basis TEXT NOT NULL,
+    basis_document_no TEXT NOT NULL DEFAULT '',
+    origin_session_id INTEGER REFERENCES handover_sessions(id),
+    status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','handover_confirmed','receiver_confirmed','completed','expired','revoked','invalidated')),
+    initiating_party TEXT NOT NULL CHECK(initiating_party IN ('交出方','接收方')),
+    initiated_by TEXT NOT NULL,
+    handover_party TEXT NOT NULL,
+    receiver_party TEXT NOT NULL,
+    handover_confirmer TEXT,
+    handover_confirmer_id INTEGER,
+    receiver_confirmer TEXT,
+    receiver_confirmer_id INTEGER,
+    handover_confirmed_at TEXT,
+    receiver_confirmed_at TEXT,
+    target_location_id INTEGER REFERENCES storage_locations(id),
+    completed_at TEXT,
+    closed_at TEXT,
+    closure_reason TEXT NOT NULL DEFAULT '',
+    expires_at TEXT NOT NULL,
+    version INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_handovers_case ON handover_sessions(forensic_case_id,status);
+CREATE INDEX IF NOT EXISTS idx_handovers_open ON handover_sessions(status,expires_at);
+CREATE TABLE IF NOT EXISTS handover_expected_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id INTEGER NOT NULL REFERENCES handover_sessions(id) ON DELETE CASCADE,
+    specimen_id INTEGER NOT NULL REFERENCES specimens(id) ON DELETE RESTRICT,
+    ordinal INTEGER NOT NULL,
+    expected_seal_code TEXT,
+    expected_packaging TEXT NOT NULL DEFAULT '',
+    expected_location_id INTEGER REFERENCES storage_locations(id),
+    baseline_seal_code TEXT,
+    baseline_packaging TEXT NOT NULL DEFAULT '',
+    baseline_location_id INTEGER REFERENCES storage_locations(id),
+    baseline_placement_id INTEGER REFERENCES specimen_placements(id),
+    baseline_last_event_id INTEGER,
+    UNIQUE(session_id,specimen_id)
+);
+CREATE INDEX IF NOT EXISTS idx_handover_items_session ON handover_expected_items(session_id);
+CREATE TABLE IF NOT EXISTS handover_scans (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id INTEGER NOT NULL REFERENCES handover_sessions(id) ON DELETE CASCADE,
+    expected_item_id INTEGER REFERENCES handover_expected_items(id),
+    specimen_id INTEGER REFERENCES specimens(id),
+    party TEXT NOT NULL CHECK(party IN ('交出方','接收方')),
+    scan_kind TEXT NOT NULL CHECK(scan_kind IN ('specimen','seal')),
+    scanned_code TEXT NOT NULL,
+    seal_code TEXT,
+    scan_result TEXT NOT NULL CHECK(scan_result IN ('matched','missing','unexpected','duplicate','seal_mismatch','unresolved')),
+    scan_seq INTEGER NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    scanned_by TEXT NOT NULL,
+    note TEXT NOT NULL DEFAULT '',
+    voided_at TEXT,
+    voided_by TEXT,
+    void_reason TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    UNIQUE(session_id,idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS idx_handover_scans_lookup ON handover_scans(session_id,party,specimen_id,scan_kind);
+CREATE TABLE IF NOT EXISTS handover_stage_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id INTEGER NOT NULL REFERENCES handover_sessions(id) ON DELETE CASCADE,
+    stage TEXT NOT NULL CHECK(stage IN (
+        'created','scanned','differences_raised','disposition_recorded','party_confirmed',
+        'completed','expired','revoked','invalidated','frozen'
+    )),
+    actor TEXT NOT NULL,
+    detail_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_handover_stages ON handover_stage_events(session_id,id);
+CREATE TABLE IF NOT EXISTS handover_liability_transfers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id INTEGER NOT NULL REFERENCES handover_sessions(id) ON DELETE CASCADE,
+    specimen_id INTEGER NOT NULL REFERENCES specimens(id) ON DELETE RESTRICT,
+    sequence_no INTEGER NOT NULL,
+    from_party TEXT NOT NULL,
+    to_party TEXT NOT NULL,
+    from_location_id INTEGER REFERENCES storage_locations(id),
+    to_location_id INTEGER REFERENCES storage_locations(id),
+    seal_before TEXT,
+    seal_after TEXT,
+    custody_event_id INTEGER REFERENCES custody_events(id),
+    transferred_at TEXT NOT NULL,
+    UNIQUE(session_id,specimen_id)
+);
+CREATE INDEX IF NOT EXISTS idx_liability_session ON handover_liability_transfers(session_id);
 '''
 
 PERMISSIONS = [
@@ -407,6 +503,7 @@ PERMISSIONS = [
     ("forensic_cases.write", "维护鉴定材料", "forensic_cases", "write"),
     ("custody.read", "查看库存", "custody", "read"),
     ("custody.write", "维护库存", "custody", "write"),
+    ("custody.handover", "办理检材交接", "custody", "handover"),
     ("examination.read", "查看检验记录", "examination", "read"),
     ("examination.write", "执行检验任务", "examination", "write"),
     ("quality.review", "复核质量结果", "quality", "review"),
@@ -495,7 +592,7 @@ def init_db() -> None:
             (administrator, timestamp),
         )
         role_permissions = {
-            "registrar": ["forensic_cases.read", "forensic_cases.write", "custody.read", "custody.write"],
+            "registrar": ["forensic_cases.read", "forensic_cases.write", "custody.read", "custody.write", "custody.handover"],
             "technician": ["forensic_cases.read", "custody.read", "examination.read", "examination.write"],
             "curator": ["forensic_cases.read", "custody.read", "examination.read", "quality.review", "release.approve"],
             "auditor": ["forensic_cases.read", "custody.read", "examination.read", "audit.read"],

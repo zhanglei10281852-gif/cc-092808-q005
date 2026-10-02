@@ -131,6 +131,9 @@ class CustodyService:
         used = self.repository.location_usage(int(target["id"]))
         if used + float(placement["quantity"]) > float(target["capacity_units"]) + 1e-9:
             raise ConflictError("目标库位容量不足", context={"available_grams": target["capacity_units"] - used})
+        self._invalidate_active_handovers(
+            int(placement["specimen_id"]), f"普通移库至库位 {target['location_code']}，未结交接会话失效"
+        )
         timestamp = to_storage(self.clock.now())
         cursor = self.connection.execute(
             "INSERT INTO specimen_placements(specimen_id,location_id,quantity,container_code,placed_at) VALUES(?,?,?,?,?)",
@@ -164,6 +167,7 @@ class CustodyService:
         quantity = float(data["quantity"])
         if quantity > float(specimen["available_quantity"]) + 1e-9:
             raise ConflictError("检材可用数量不足")
+        self._invalidate_active_handovers(int(specimen["id"]), "检材被领用/取样，未结交接会话失效")
         timestamp = to_storage(self.clock.now())
         remaining = round(float(specimen["available_quantity"]) - quantity, 6)
         status = "depleted" if remaining <= 1e-9 else specimen["status"]
@@ -220,6 +224,11 @@ class CustodyService:
                 (timestamp, hold["specimen_id"]),
             )
         return record(self.connection.execute("SELECT * FROM specimen_holds WHERE id=?", (hold_id,)).fetchone()) or {}
+
+    def _invalidate_active_handovers(self, specimen_id: int, reason: str) -> None:
+        from app.forensics.handover import HandoverService
+
+        HandoverService(self.connection, self.clock).invalidate_for_external_move(specimen_id, reason)
 
     def reconcile(self, specimen_id: int) -> dict[str, Any]:
         specimen = self.repository.require_specimen(specimen_id)

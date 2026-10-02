@@ -302,3 +302,86 @@ class Page(BaseModel):
     total: int
     limit: int
     offset: int
+
+
+class HandoverDirection(str, Enum):
+    request = "调取"
+    return_back = "归还"
+
+
+class HandoverParty(str, Enum):
+    handover = "交出方"
+    receiver = "接收方"
+
+
+class HandoverExpectedItem(BaseModel):
+    specimen_id: int | None = Field(default=None, gt=0)
+    specimen_no: str | None = Field(default=None, min_length=3, max_length=60)
+    expected_seal_code: str = Field(min_length=1, max_length=100)
+
+    @field_validator("specimen_no")
+    @classmethod
+    def normalize_specimen_no(cls, value: str | None) -> str | None:
+        return value.strip().upper() if value else value
+
+
+class HandoverCreate(BaseModel):
+    session_no: str = Field(min_length=3, max_length=60)
+    case_id: int = Field(gt=0)
+    direction: HandoverDirection
+    legal_basis: str = Field(min_length=2, max_length=300)
+    basis_document_no: str = Field(default="", max_length=100)
+    origin_session_id: int | None = Field(default=None, gt=0)
+    target_location_id: int | None = Field(default=None, gt=0)
+    initiating_party: HandoverParty = HandoverParty.receiver
+    handover_party: str = Field(min_length=2, max_length=100)
+    receiver_party: str = Field(min_length=2, max_length=100)
+    ttl_minutes: int = Field(default=120, ge=5, le=1440)
+    items: list[HandoverExpectedItem] = Field(default_factory=list, max_length=500)
+    initiated_by: str = Field(min_length=1, max_length=100)
+
+    @field_validator("session_no")
+    @classmethod
+    def normalize_session_no(cls, value: str) -> str:
+        return value.strip().upper()
+
+    @field_validator("handover_party", "receiver_party")
+    @classmethod
+    def strip_party(cls, value: str) -> str:
+        return value.strip()
+
+    @model_validator(mode="after")
+    def validate_parties(self) -> "HandoverCreate":
+        if self.handover_party.strip() == self.receiver_party.strip():
+            raise ValueError("交出方与接收方不能是同一方")
+        return self
+
+
+class HandoverScan(BaseModel):
+    party: HandoverParty
+    scan_kind: str = Field(pattern="^(specimen|seal)$")
+    code: str = Field(min_length=1, max_length=100)
+    specimen_code: str | None = Field(default=None, min_length=3, max_length=60)
+    idempotency_key: str = Field(min_length=8, max_length=100)
+    scanned_by: str = Field(min_length=1, max_length=100)
+    note: str = Field(default="", max_length=300)
+
+    @field_validator("code", "specimen_code")
+    @classmethod
+    def normalize_code(cls, value: str | None) -> str | None:
+        return value.strip().upper() if value else value
+
+
+class HandoverScanVoid(BaseModel):
+    actor: str = Field(min_length=1, max_length=100)
+    reason: str = Field(min_length=2, max_length=300)
+
+
+class HandoverConfirm(BaseModel):
+    party: HandoverParty
+    confirmer: str = Field(min_length=1, max_length=100)
+
+
+class HandoverRevoke(BaseModel):
+    actor: str = Field(min_length=1, max_length=100)
+    reason: str = Field(min_length=2, max_length=300)

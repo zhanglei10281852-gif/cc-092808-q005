@@ -46,9 +46,30 @@ python -m app.cli demo
 
 - `app/forensics/cases.py` 管理委托机构、案件档案、委托资料与受理状态。
 - `app/forensics/custody.py` 管理检材、库位容量、容器摆放、流转、领用和冻结。
+- `app/forensics/handover.py` 管理有期限的当庭调取/归还交接会话、双方扫描、差异处置与责任链。
 - `app/forensics/examinations.py` 管理检验规程、取样、观察记录、检验结果与复核日程。
 - `app/forensics/quality.py` 管理温湿度读数、偏离告警和检材领用审批。
 - `app/api`、`app/services` 和 `app/repositories` 提供身份、权限、审计、后台作业及维护能力。
+
+## 有期限的检材交接会话
+
+开庭前临时调取多件检材时，普通移库备注既无法阻止遗漏，也不能证明双方确认的是同一批封识。交接会话把“清单核对—双方各自确认—责任与位置一次性转移”做成一个有期限的原子过程：
+
+1. 发起人指定案件、调取依据（调取函等法律文书）、交出方/接收方、接收库位和有效期（5–1440 分钟），系统按依据生成预期清单，逐件锁定调取函登记的封识编号，并记录当时的库位、摆放与最后流转事件作为核对基线。
+2. 交出方与接收方分别扫描检材编号与封识。扫描接口实时返回差异：缺件 `missing`、多件 `unexpected`（含不在调取函上的封袋）、重复扫描 `duplicates`、封识不符 `seal_mismatches`。误扫可作废旧扫描后重扫；扫描带幂等键，相同扫描事件重放不会增加次数。
+3. 只有清单逐件逐方一致（`consistent`）后，双方才能各自确认；系统拒绝同一登录身份代表双方确认。
+4. 双方确认齐备的同一事务内，全部检材的保管责任（交出方→接收方）和位置（原库位→接收库位）一次性转移，逐件写入责任链 `handover_liability_transfers` 和“交接”类型的流转事件；任何一件不满足条件都不写部分流转。
+5. 超过有效期、被撤销，或确认前任一检材被普通移库/领用/取样等会话外路径移动，整次会话置为 `expired`/`revoked`/`invalidated`，不产生任何交接流转；确认前还会用基线摆放与基线流转事件做最后校验。
+6. 归还时基于原调取会话生成清单沿用核对。封识与原会话不同属于“封识变化”，不阻断归还，但完成时自动对相关检材加“争议”冻结并记录阶段事件。
+
+交接接口（权限 `custody.handover` 写入、`custody.read` 只读）：
+
+- `POST /api/forensics/handovers` 创建会话（调取给 `items`，归还给 `origin_session_id`）。
+- `POST /api/forensics/handovers/{id}/scans` 扫描检材/封识并实时返回差异。
+- `POST /api/forensics/handovers/{id}/scans/{scan_id}/void` 作废误扫（差异处置）。
+- `POST /api/forensics/handovers/{id}/confirm` 交出方/接收方分别确认。
+- `POST /api/forensics/handovers/{id}/revoke` 撤销会话。
+- `GET /api/forensics/handovers`、`GET /api/forensics/handovers/{id}` 查看会话阶段、双方确认、差异处置和最终责任链；读路径会自动落定已超时会话。
 
 ## 一致性约定
 

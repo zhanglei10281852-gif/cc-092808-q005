@@ -202,10 +202,77 @@ class ForensicRepository:
         ).fetchall())
         return item
 
+    def require_handover_session(self, session_id: int) -> dict[str, Any]:
+        item = record(self.connection.execute("SELECT * FROM handover_sessions WHERE id=?", (session_id,)).fetchone())
+        if item is None:
+            raise NotFoundError("交接会话不存在")
+        return item
+
+    def handover_session_by_no(self, session_no: str) -> dict[str, Any] | None:
+        return record(self.connection.execute("SELECT * FROM handover_sessions WHERE session_no=?", (session_no,)).fetchone())
+
+    def handover_expected_items(self, session_id: int) -> list[dict[str, Any]]:
+        return records(self.connection.execute(
+            "SELECT * FROM handover_expected_items WHERE session_id=? ORDER BY ordinal,id", (session_id,)
+        ).fetchall())
+
+    def handover_scans(self, session_id: int) -> list[dict[str, Any]]:
+        return records(self.connection.execute(
+            "SELECT * FROM handover_scans WHERE session_id=? ORDER BY id", (session_id,)
+        ).fetchall())
+
+    def handover_stage_events(self, session_id: int) -> list[dict[str, Any]]:
+        return records(self.connection.execute(
+            "SELECT * FROM handover_stage_events WHERE session_id=? ORDER BY id", (session_id,)
+        ).fetchall())
+
+    def handover_liability_transfers(self, session_id: int) -> list[dict[str, Any]]:
+        return records(self.connection.execute(
+            "SELECT * FROM handover_liability_transfers WHERE session_id=? ORDER BY sequence_no,id", (session_id,)
+        ).fetchall())
+
+    def handover_session_detail(self, session_id: int) -> dict[str, Any]:
+        session = self.require_handover_session(session_id)
+        items = self.handover_expected_items(session_id)
+        for item in items:
+            item["specimen"] = self.require_specimen(int(item["specimen_id"]))
+        session["expected_items"] = items
+        session["scans"] = self.handover_scans(session_id)
+        session["stage_events"] = self.handover_stage_events(session_id)
+        session["liability_chain"] = self.handover_liability_transfers(session_id)
+        session["forensic_case"] = self.require_forensic_case(int(session["forensic_case_id"]))
+        return session
+
+    def list_handover_sessions(
+        self, *, case_id: int | None, status: str | None, limit: int, offset: int
+    ) -> tuple[list[dict], int]:
+        where: list[str] = []
+        params: list[Any] = []
+        if case_id is not None:
+            where.append("forensic_case_id=?")
+            params.append(case_id)
+        if status:
+            where.append("status=?")
+            params.append(status)
+        clause = " WHERE " + " AND ".join(where) if where else ""
+        total = int(self.connection.execute(f"SELECT COUNT(*) FROM handover_sessions{clause}", params).fetchone()[0])
+        params.extend([limit, offset])
+        rows = self.connection.execute(
+            f"SELECT * FROM handover_sessions{clause} ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?", params
+        ).fetchall()
+        return records(rows), total
+
+    def active_handover_for_specimen(self, specimen_id: int) -> dict[str, Any] | None:
+        return record(self.connection.execute(
+            "SELECT * FROM handover_sessions WHERE status IN ('open','handover_confirmed','receiver_confirmed') "
+            "AND id IN (SELECT session_id FROM handover_expected_items WHERE specimen_id=?) ORDER BY id LIMIT 1",
+            (specimen_id,),
+        ).fetchone())
+
     def count_table(self, table: str) -> int:
         allowed = {
             "forensic_cases", "specimens", "storage_locations", "examinations",
-            "review_schedules", "quality_alerts", "release_requests",
+            "review_schedules", "quality_alerts", "release_requests", "handover_sessions",
         }
         if table not in allowed:
             raise ValueError("不允许统计该数据表")
